@@ -29,6 +29,8 @@ class EncryptManager:
         self.dst_path = None
         self.env_python_path = None
         self.part_files = []
+        self.progress_prefix = "PROGRESS:"
+        self.output_channel = "part"
 
     def update_main_path(self, pj_name):
         self.pj_name = pj_name
@@ -36,15 +38,46 @@ class EncryptManager:
         self.main_path = os.path.dirname(main_file)
         # self.main_path = 'D:\\'
         self.dst_path = os.path.join(self.main_path, "dist", self.pj_name)
-        self.dirs = config_manager.project_dict[pj_name]['copy_dirs']
+        self.dirs = config_manager.project_dict[pj_name].get('copy_dirs', [])
         self.skip_dirs = config_manager.project_dict[pj_name].get('skip_dirs', [])
         print(f"更新需复制的文件夹:{pj_name}->{self.dirs}")
 
     def update_env_path(self, env_name):
-        env_path = config_manager.env_dict[env_name]["local_env_path"]
+        env_path = None
+        env_info = config_manager.env_dict.get(env_name, {})
+        if "local_env_path" in env_info:
+            env_path = env_info["local_env_path"]
+        if not env_path:
+            # Fallback: resolve conda env path by name
+            try:
+                conda_env_name = env_name.replace(".tar.gz", "")
+                result = subprocess.run(
+                    ["conda", "env", "list"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                for line in result.stdout.strip().split('\n'):
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if parts and parts[0] == conda_env_name:
+                            for part in parts[1:]:
+                                if os.path.isdir(part):
+                                    env_path = part
+                                    break
+                            break
+            except Exception:
+                env_path = None
+        if not env_path:
+            signal_manager.messageBoxSignal.emit("未找到环境路径，请先确认环境已安装或重新添加环境")
+            return
         # self.env_python_path = os.path.join(env_path, "python.exe")
         self.env_python_path = env_path
         self.env_name = env_name.split(".")[0]
+
+    def set_env_path_by_venv(self, venv_path):
+        self.env_python_path = venv_path
+        self.env_name = None  # Flag to use direct python execution instead of conda
 
     def copy_dir(self):
         for dir_name in self.dirs:
@@ -57,25 +90,45 @@ class EncryptManager:
     def delete_ui_file(self):
         # gui文件夹 删除ui文件
         gui_path = os.path.join(self.dst_path, "Gui")
+        if not os.path.exists(gui_path):
+            return
         for file_name in os.listdir(gui_path):
             if file_name.endswith(".ui"):
                 os.remove(os.path.join(gui_path, file_name))
 
     def encrypt_file(self):
         import threading
-        # self.part_encrypt_file()
-        self.task = threading.Thread(target=self.part_encrypt_file)
+        if not self.env_python_path and not self.env_name:
+            signal_manager.messageBoxSignal.emit("未设置有效环境路径，请先选择环境")
+            return
+        self.output_channel = "full"
+        # 全量编译入口
+        self.task = threading.Thread(target=self.encrypt_file_thread)
         self.task.daemon = True
         self.task.start()
 
     def part_encrypt_file(self):
+        self.output_channel = "part"
+        signal_manager.updateProgressBarValueSignal.emit(0)
+        try:
+            self._part_encrypt_file_impl()
+        except Exception as e:
+            msg = f"编译异常退出：{e}"
+            print(msg)
+            self._emit_text(msg, "error")
+
+    def _part_encrypt_file_impl(self):
         app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         # packet_path = os.path.join(app_path, "dist", self.pj_name)
         print(f'打包好的软件目录：{self.dst_path}')
-        # 执行前验证 py2pyd.py 是否在 app_path 目录中
-        py_script = os.path.join(app_path, "py2pyd.py")
+        self._emit_text(f'打包好的软件目录：{self.dst_path}', "info")
+        # 执行前验证 py2pyd_global.py 是否在 app_path 目录中
+        py_script = os.path.join(app_path, "py2pyd_global.py")
         if not os.path.exists(py_script):
-            print(f"错误：py2pyd.py 不在 {app_path} 目录中！")
+            print(f"错误：py2pyd_global.py 不在 {app_path} 目录中！")
+            self._emit_text(
+                f"错误：py2pyd_global.py 不在 {app_path} 目录中！", "error"
+            )
             return  # 终止执行，避免后续错误
         mid_dir = os.path.join(app_path, "midDir")  # 加密中间文件存放目录
 
@@ -84,7 +137,14 @@ class EncryptManager:
         # 如果文件夹有文件，则删除
         clear_directory(mid_dir)
 
-        signal_manager.updatePartEncryptTextSignal.emit("开始加密文件", 'warning')
+        if not self.part_files:
+            msg = "未找到可加密文件，请先刷新修改文件列表或确认工程路径"
+            print(msg)
+            self._emit_text(msg, "error")
+            return
+
+        self._emit_text("开始加密文件", 'warning')
+        copied_count = 0
         for src_file in self.part_files:
             try:
                 # 构造目标文件的完整路径（目标根目录 + 源文件的相对路径）
@@ -101,30 +161,45 @@ class EncryptManager:
                 file_path = Path(self.main_path) / src_file
                 shutil.copyfile(file_path, target_file)
                 # print(f"已复制文件：{file_path} -> {target_file}")
+                copied_count += 1
 
             except Exception as e:
                 print(f"复制文件失败 {src_file}：{str(e)}")
+        if copied_count == 0:
+            msg = "复制文件到中转目录失败，未生成可加密文件"
+            print(msg)
+            self._emit_text(msg, "error")
+            return
 
         # 加密文件
         bat_save_path = os.path.join(app_path, "run_py_script.bat")
         bat_save_path = Path(bat_save_path).resolve()  # 转换为绝对路径
-        if not bat_save_path.exists():
-            print(f"❌ 批处理文件不存在：{bat_save_path}")
-            return  # 终止执行，避免后续错误
         generate_conda_batch(self.env_python_path, py_script, mid_dir, bat_save_path)
+        if not bat_save_path.exists():
+            print(f"❌ 批处理文件生成失败：{bat_save_path}")
+            self._emit_text(
+                f"❌ 批处理文件生成失败：{bat_save_path}", "error"
+            )
+            return  # 终止执行，避免后续错误
+        self._emit_text(
+            f"✅ 批处理文件已生成：{bat_save_path}", "info"
+        )
         cmd = f"{bat_save_path}"
         python_path = os.path.join(self.env_python_path, "python.exe")
-        process = subprocess.Popen(cmd, shell=True, cwd=app_path, stdout=subprocess.PIPE)
+        process = subprocess.Popen(cmd, shell=True, cwd=app_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # 捕获并打印输出内容
         while True:
             output = process.stdout.readline()
             if output:
                 try:
                     # 优先尝试GBK（中文常见编码）
-                    print("运行output信息:", output.decode("gbk").strip())
+                    line = output.decode("gbk").strip()
+                    print("运行output信息:", line)
                 except UnicodeDecodeError:
                     # 若仍失败，忽略无法解码的字符
-                    print("运行output信息:", output.decode("utf-8", errors="ignore").strip())
+                    line = output.decode("utf-8", errors="ignore").strip()
+                    print("运行output信息:", line)
+                self._handle_progress_line(line)
 
             if output == b'' and process.poll() is not None:
                 break
@@ -133,23 +208,37 @@ class EncryptManager:
         mid_files_count = count_files_recursive(mid_dir)
         if mid_files_count == len(self.part_files):
             msg = '加密完成，覆盖到打包好的软件目录'
-            signal_manager.updatePartEncryptTextSignal.emit(msg, 'warning')
+            self._emit_text(msg, 'warning')
         else:
             msg = f'加密失败，加密文件数量：{mid_files_count}与源文件数量：{len(self.part_files)}不一致'
-            signal_manager.updatePartEncryptTextSignal.emit(msg, 'error')
+            self._emit_text(msg, 'error')
             return
 
         replace_same_files(mid_dir, self.dst_path)
         msg = f'任务完成！'
-        signal_manager.updatePartEncryptTextSignal.emit(msg, 'warning')
+        self._emit_text(msg, 'warning')
+        signal_manager.updateProgressBarValueSignal.emit(100)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.dst_path))))
 
 
 
 
     def encrypt_file_thread(self):
+        signal_manager.updateProgressBarValueSignal.emit(0)
+        try:
+            self._encrypt_file_thread_impl()
+        except Exception as e:
+            msg = f"编译异常退出：{e}"
+            print(msg)
+            self._emit_text(msg, "error")
+
+    def _encrypt_file_thread_impl(self):
         # 加密文件
         app_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        skip_dirs_run = list(self.skip_dirs or [])
+        if "Src" in skip_dirs_run:
+            print("检测到跳过项包含 Src，已忽略该项以执行全量编译")
+            skip_dirs_run = [d for d in skip_dirs_run if d != "Src"]
         for dir_name in self.dirs:
             dst_dir = os.path.join(self.dst_path, dir_name)  # Gui\ Src \ UpdaterSet...
             if dir_name == "Gui" or dir_name == "UpdaterSet":
@@ -160,40 +249,139 @@ class EncryptManager:
                 print(f"{dir_name}文件夹下的子文件夹{sub_dir}")
             if sub_dir:  # 存在子文件夹 单独编译子文件夹所有文件
                 for sub_dir_name in sub_dir:
-                    if dir_name in self.skip_dirs:
+                    rel_path = os.path.join(dir_name, sub_dir_name)
+                    if self._should_skip_path(rel_path, skip_dirs_run):
                         continue
                     sub_dst_dir = os.path.join(dst_dir, sub_dir_name)
                     print(f"加密{sub_dst_dir}文件夹")
-                    cmd = f"conda run -n {self.env_name} python py2pyd.py all del {Path(sub_dst_dir)}"
-                    print(f"加密命令：{cmd}")
-                    process = subprocess.Popen(cmd, shell=False, cwd=app_path, stdout=subprocess.PIPE)
+                    python_exe = None
+                    if self.env_python_path:
+                        python_exe = os.path.join(self.env_python_path, "python.exe")
+                        if not os.path.exists(python_exe):
+                            python_exe = os.path.join(self.env_python_path, "Scripts", "python.exe")
+                    if python_exe and os.path.exists(python_exe):
+                        cmd_args = [
+                            python_exe, "py2pyd_global.py", "all", "del", str(Path(sub_dst_dir)), python_exe
+                        ]
+                    else:
+                        cmd_args = [
+                            "conda", "run", "-n", self.env_name,
+                            "python", "py2pyd_global.py", "all", "del", str(Path(sub_dst_dir)), "python"
+                        ]
+
+                    print(f"加密命令：{subprocess.list2cmdline(cmd_args)}")
+                    process = subprocess.Popen(cmd_args, shell=False, cwd=app_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                     # 捕获并打印输出内容
                     while True:
                         output = process.stdout.readline()
                         # error = process.stderr.readline()
                         if output:
-                            print("运行output信息:", output.decode("utf-8").strip())
+                            try:
+                                line = output.decode("utf-8").strip()
+                            except UnicodeDecodeError:
+                                line = output.decode("gbk", errors="ignore").strip()
+                            print("运行output信息:", line)
+                            self._handle_progress_line(line)
                         # if error:
                         #     print("运行error信息",error.decode("utf-8").strip(), file=sys.stderr)
                         if output == b'' and process.poll() is not None:
                             # print("nuitka打包完成")
                             break
+                    if process.returncode not in (0, None):
+                        msg = f"编译命令失败，返回码: {process.returncode}"
+                        print(msg)
+                        self._emit_text(msg, "error")
             else:  # 不存在子文件夹 直接编译整个文件夹
-                cmd = f"conda run -n {self.env_name} python py2pyd.py all del {Path(dst_dir)}"
-                print(f"加密命令：{cmd}")
-                process = subprocess.Popen(cmd, shell=True, cwd=app_path, stdout=subprocess.PIPE)
+                if self._should_skip_path(dir_name, skip_dirs_run):
+                    continue
+                python_exe = None
+                if self.env_python_path:
+                    python_exe = os.path.join(self.env_python_path, "python.exe")
+                    if not os.path.exists(python_exe):
+                        python_exe = os.path.join(self.env_python_path, "Scripts", "python.exe")
+                if python_exe and os.path.exists(python_exe):
+                    cmd_args = [
+                        python_exe, "py2pyd_global.py", "all", "del", str(Path(dst_dir)), python_exe
+                    ]
+                else:
+                    cmd_args = [
+                        "conda", "run", "-n", self.env_name,
+                        "python", "py2pyd_global.py", "all", "del", str(Path(dst_dir)), "python"
+                    ]
+                print(f"加密命令：{subprocess.list2cmdline(cmd_args)}")
+                process = subprocess.Popen(cmd_args, shell=False, cwd=app_path, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 # 捕获并打印输出内容
                 while True:
                     output = process.stdout.readline()
                     # error = process.stderr.readline()
                     if output:
-                        print("运行output信息:", output.decode("utf-8").strip())
+                        try:
+                            line = output.decode("utf-8").strip()
+                        except UnicodeDecodeError:
+                            line = output.decode("gbk", errors="ignore").strip()
+                        print("运行output信息:", line)
+                        self._handle_progress_line(line)
                     # if error:
                     #     print("运行error信息",error.decode("utf-8").strip(), file=sys.stderr)
                     if output == b'' and process.poll() is not None:
                         # print("nuitka打包完成")
                         break
+                if process.returncode not in (0, None):
+                    msg = f"编译命令失败，返回码: {process.returncode}"
+                    print(msg)
+                    self._emit_text(msg, "error")
         print(f"加密完成")
+        signal_manager.updateProgressBarValueSignal.emit(100)
+
+    def _handle_progress_line(self, line):
+        if not line:
+            return
+        if line.startswith("COUNT:"):
+            try:
+                count_part = line.split("COUNT:", 1)[1].strip()
+                current, total = count_part.split("/", 1)
+                msg = f"编译进度：{int(current)}/{int(total)}"
+                self._emit_text(msg, "info")
+            except Exception:
+                pass
+            return
+        if line.startswith("TOTAL_TIME:"):
+            try:
+                seconds = float(line.split("TOTAL_TIME:", 1)[1].strip())
+                msg = f"编译完成，总耗时：{seconds:.2f} s"
+                self._emit_text(msg, "warning")
+            except Exception:
+                pass
+            return
+        if line.startswith(self.progress_prefix):
+            try:
+                value = int(line.split(self.progress_prefix, 1)[1])
+                signal_manager.updateProgressBarValueSignal.emit(value)
+            except Exception:
+                pass
+
+    def _emit_text(self, text, status):
+        if self.output_channel == "full":
+            signal_manager.updateFullEncryptTextSignal.emit(text, status)
+        else:
+            signal_manager.updatePartEncryptTextSignal.emit(text, status)
+
+    @staticmethod
+    def _should_skip_path(rel_path, skip_dirs):
+        if not skip_dirs:
+            return False
+        norm_path = rel_path.replace("\\", "/").strip("/")
+        for entry in skip_dirs:
+            entry_norm = str(entry).replace("\\", "/").strip("/")
+            if not entry_norm:
+                continue
+            if "/" in entry_norm:
+                if norm_path == entry_norm or norm_path.startswith(entry_norm + "/"):
+                    return True
+            else:
+                if norm_path == entry_norm or norm_path.startswith(entry_norm + "/"):
+                    return True
+        return False
 
 
 def list_subfolders(folder_path):
@@ -247,6 +435,10 @@ def generate_conda_batch(
     if not activate_bat.exists():
         raise FileNotFoundError(f"未找到conda激活脚本：{activate_bat}\n请检查conda虚拟环境路径是否正确")
 
+    python_exe = conda_env / "python.exe"
+    if not python_exe.exists():
+        raise FileNotFoundError(f"未找到python.exe：{python_exe}\n请检查conda虚拟环境路径是否正确")
+
     # 构建批处理文件内容
     # 1. @echo off：关闭命令回显（避免输出冗余命令）
     # 2. call激活脚本：激活指定虚拟环境
@@ -255,8 +447,12 @@ def generate_conda_batch(
 :: 激活conda虚拟环境
 call "{activate_bat}" "{conda_env}"
 
+:: 显示当前Python环境信息（用于排查Cython环境问题）
+"{python_exe}" -c "import sys;print('PYTHON_EXE:'+sys.executable)"
+"{python_exe}" -c "import Cython,sys;print('CYTHON_VER:'+Cython.__version__)"
+
 :: 执行Python脚本（传入参数：all del [中转文件夹]）
-python "{py_script}" all del "{mid}" {conda_env/'python.exe'}
+"{python_exe}" "{py_script}" all del "{mid}" "{python_exe}"
 
 
 :: 可选：执行完成后暂停（方便查看输出，按需启用）

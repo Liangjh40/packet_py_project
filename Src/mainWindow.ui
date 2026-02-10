@@ -144,7 +144,7 @@
             <item>
              <widget class="QGroupBox" name="groupBox_7">
               <property name="title">
-               <string>跳过的文件夹</string>
+               <string>跳过的文件/文件夹</string>
               </property>
               <layout class="QHBoxLayout" name="horizontalLayout_13">
                <item>
@@ -158,6 +158,13 @@
                     <widget class="QPushButton" name="pb_add_skip">
                      <property name="text">
                       <string>+</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QPushButton" name="pb_add_skip_dir">
+                     <property name="text">
+                      <string>文件夹</string>
                      </property>
                     </widget>
                    </item>
@@ -182,7 +189,7 @@
             <item>
              <widget class="QPushButton" name="pb_encrypt">
               <property name="text">
-               <string>原神启动</string>
+               <string>全量编译</string>
               </property>
              </widget>
             </item>
@@ -257,7 +264,7 @@
              <item>
               <widget class="QPushButton" name="pb_part_encrypt">
                <property name="text">
-                <string>编译覆盖</string>
+                <string>部分编译覆盖</string>
                </property>
               </widget>
              </item>

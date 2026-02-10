@@ -14,14 +14,18 @@ from Src.manager.configManager import config_manager
 
 class NuitkaManager:
     def __init__(self):
-        self.default_env_path = config_manager.env_dict["explorer38.zip"]["local_env_path"]
-        self.nuitka_path = os.path.join(self.default_env_path, "Scripts", "nuitka.bat")  # 默认py38的nuitka路径
+        self.default_env_path = None
+        self.nuitka_path = None
         self.main_file = None   # 绝对路径
-        self.ico = None  # ico路径
+        self.ico = './default.png'  # ico路径
 
     def update_project_path(self, pj_name):
         self.main_file = config_manager.project_dict[pj_name]["path"]
-        self.ico = config_manager.project_dict[pj_name]["icon"]
+        icon_path = config_manager.project_dict[pj_name].get("icon", "")
+        if icon_path:
+            self.ico = icon_path
+        else:
+            self.ico = './default.png'
         print(f"当前项目路径：{self.main_file}")
         print(f"当前项目ico路径：{self.ico}")
 
@@ -29,6 +33,35 @@ class NuitkaManager:
         self.default_env_path = config_manager.env_dict[env_name]["local_env_path"]
         self.nuitka_path = os.path.join(self.default_env_path, "Scripts", "nuitka.bat")
         print(f"当前环境nuitka路径：{self.nuitka_path}")
+
+    def set_nuitka_path_by_venv(self, venv_path):
+        self.default_env_path = venv_path
+        # Check for various executables
+        for ext in ["bat", "exe", "cmd"]:
+            path = os.path.join(venv_path, "Scripts", f"nuitka.{ext}")
+            if os.path.exists(path):
+                self.nuitka_path = path
+                break
+        else:
+             # Default fallback, though expected to be caught earlier
+             self.nuitka_path = os.path.join(venv_path, "Scripts", "nuitka.bat")
+        
+        print(f"当前自动检测Nuitka路径：{self.nuitka_path}")
+
+    def set_nuitka_path_by_conda_env(self, conda_env_path):
+        """根据 conda 环境路径设置 Nuitka 路径"""
+        self.default_env_path = conda_env_path
+        # 在 conda 环境的 Scripts 目录下查找 Nuitka
+        for ext in ["bat", "exe", "cmd"]:
+            path = os.path.join(conda_env_path, "Scripts", f"nuitka.{ext}")
+            if os.path.exists(path):
+                self.nuitka_path = path
+                print(f"在 conda 环境中找到 Nuitka：{self.nuitka_path}")
+                return True
+        
+        # 未找到 Nuitka
+        print(f"错误：在 conda 环境 {conda_env_path} 中未找到 Nuitka")
+        return False
 
 
 

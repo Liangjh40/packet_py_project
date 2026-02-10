@@ -12,8 +12,10 @@ from PyQt5.QtCore import QObject, pyqtSignal
 class SignalManager(QObject):
 
     updateProgressBarValueSignal = pyqtSignal(int)
+    updateProgressBarRangeSignal = pyqtSignal(int, int)
     messageBoxSignal = pyqtSignal(str)
     updatePartEncryptTextSignal = pyqtSignal(str, str)
+    updateFullEncryptTextSignal = pyqtSignal(str, str)
 
 
 signal_manager = SignalManager()

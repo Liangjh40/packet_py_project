@@ -26,20 +26,26 @@ class ConfigManager:
         self.config = {}
         self.env_dict = {}
         self.project_dict = {}
+        self.settings = {}
         self.load_config()
 
     def load_config(self):
-        self.config = self.read_config("./config.json")
+        self.config = self.read_config(os.path.join(self.work_path, "config.json"))
         self.env_dict = self.config.get("env", {})
         self.project_dict = self.config.get("project", {})
+        self.settings = self.config.get("settings", {})
+        if "compile_threads" not in self.settings:
+            self.settings["compile_threads"] = max(1, os.cpu_count() or 4)
+            self.config["settings"] = self.settings
+            self.write_config(self.config, os.path.join(self.work_path, "config.json"))
 
     def update_env(self):
         self.config["env"] = self.env_dict
-        self.write_config(self.config, "./config.json")
+        self.write_config(self.config, os.path.join(self.work_path, "config.json"))
 
     def update_project(self):
         self.config["project"] = self.project_dict
-        self.write_config(self.config, "./config.json")
+        self.write_config(self.config, os.path.join(self.work_path, "config.json"))
 
 
 
@@ -52,6 +58,12 @@ class ConfigManager:
 
     @staticmethod
     def read_config(config_path):
+        if not os.path.exists(config_path):
+            print(f"配置文件不存在，自动创建默认配置: {config_path}")
+            default_config = {"env": {}, "project": {}, "settings": {"compile_threads": max(1, os.cpu_count() or 4)}}
+            ConfigManager.write_config(default_config, config_path)
+            return default_config
+            
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
